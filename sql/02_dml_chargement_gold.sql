@@ -5,7 +5,7 @@
 -- Auteur : Elyes Jaidane
 -- Prérequis : dump restauré (tables public.*), puis sql/01_ddl_gold.sql
 --
---   pg_restore --no-owner --no-privileges -d healthcare dump-healthcare-202611060813
+--   pg_restore --no-owner --no-privileges -d healthcare dump-healthcare-202611061418
 --   psql -d healthcare -v ON_ERROR_STOP=1 -f sql/01_ddl_gold.sql
 --   psql -d healthcare -v ON_ERROR_STOP=1 -f sql/02_dml_chargement_gold.sql
 --
@@ -18,10 +18,9 @@
 --   * libellé facultatif vide     -> « Non renseigné »
 --   * FINESS non numérique        -> NULL (pas de faux code partagé)
 --   * sexe et tranche d'âge harmonisés ; nom et prénom jamais copiés
---   * nb_consultation = 1
---
--- Hospitalisation : aucune table source dans le dump. Le fait n'est pas
--- alimenté. La structure et ses contraintes sont créées par le DDL.
+--   * nb_consultation = 1 et nb_hospitalisation = 1
+--   * duree_sejour (source) est recopié dans duree_jour
+--   * chaque séjour est relié à son établissement
 -- =============================================================================
 
 SET client_encoding = 'UTF8';
@@ -34,7 +33,8 @@ BEGIN
        OR to_regclass('public.diagnostic') IS NULL
        OR to_regclass('public.professionnel_de_sante') IS NULL
        OR to_regclass('public.etablissement') IS NULL
-       OR to_regclass('public.temps') IS NULL THEN
+       OR to_regclass('public.temps') IS NULL
+       OR to_regclass('public.hospitalisation') IS NULL THEN
         RAISE EXCEPTION
             'Schéma source incomplet. Restaurez le dump dans public avant ce script.';
     END IF;
@@ -218,7 +218,9 @@ SELECT
             THEN substring(btrim(e.code_postal), 1, 2)
         ELSE 'Non renseigné'
     END
-FROM public.etablissement AS e;
+FROM public.etablissement AS e
+-- La source contient déjà une ligne -1. Le membre Inconnu est inséré plus haut.
+WHERE e.id_etablissement <> -1;
 
 -- -----------------------------------------------------------------------------
 -- Rejets Consultation
@@ -269,6 +271,62 @@ LEFT JOIN gold.dim_etablissement AS et
 ORDER BY c.num_consultation;
 
 -- -----------------------------------------------------------------------------
+-- Rejets Hospitalisation
+-- Patient introuvable, date introuvable, ou durée absente ou négative :
+-- la ligne ne va pas dans le fait. Le numéro de séjour est conservé,
+-- pas le contenu médical.
+-- -----------------------------------------------------------------------------
+INSERT INTO gold.rejet_chargement (job, source_table, cle_source, regle)
+SELECT
+    'hospitalisation',
+    'public.hospitalisation',
+    h.num_hospitalisation::varchar(50),
+    CASE
+        WHEN p.id_patient IS NULL THEN 'patient introuvable dans dim_patient'
+        WHEN tm.id_temps IS NULL THEN 'date introuvable dans dim_temps'
+        WHEN h.duree_sejour IS NULL THEN 'duree_sejour absente'
+        ELSE 'duree_sejour negative'
+    END
+FROM public.hospitalisation AS h
+LEFT JOIN gold.dim_patient AS p
+    ON p.id_patient = h.id_patient
+LEFT JOIN gold.dim_temps AS tm
+    ON tm.id_temps = h.id_temps
+WHERE p.id_patient IS NULL
+   OR tm.id_temps IS NULL
+   OR h.duree_sejour IS NULL
+   OR h.duree_sejour < 0;
+
+-- -----------------------------------------------------------------------------
+-- Fait Hospitalisation
+-- Jointures internes sur le patient et la date. Diagnostic ou établissement
+-- introuvable : membre Inconnu. duree_sejour devient duree_jour.
+-- -----------------------------------------------------------------------------
+INSERT INTO gold.fait_hospitalisation (
+    id_patient, id_temps, id_diagnostic, id_etablissement,
+    nb_hospitalisation, duree_jour
+)
+SELECT DISTINCT ON (h.num_hospitalisation)
+    h.id_patient,
+    h.id_temps,
+    COALESCE(d.id_diagnostic, -1),
+    COALESCE(et.id_etablissement, -1),
+    1,
+    h.duree_sejour
+FROM public.hospitalisation AS h
+JOIN gold.dim_patient AS p
+    ON p.id_patient = h.id_patient
+JOIN gold.dim_temps AS tm
+    ON tm.id_temps = h.id_temps
+LEFT JOIN gold.dim_diagnostic AS d
+    ON d.id_diagnostic = h.id_diagnostic
+LEFT JOIN gold.dim_etablissement AS et
+    ON et.id_etablissement = h.id_etablissement
+WHERE h.duree_sejour IS NOT NULL
+  AND h.duree_sejour >= 0
+ORDER BY h.num_hospitalisation;
+
+-- -----------------------------------------------------------------------------
 -- Contrôles
 -- Le script échoue si une consultation source n'est ni chargée ni rejetée,
 -- ou si une clé étrangère du fait ne tombe pas sur une dimension
@@ -281,6 +339,9 @@ DECLARE
     n_fait    bigint;
     n_rejet   bigint;
     n_patient bigint;
+    n_h_source bigint;
+    n_h_fait   bigint;
+    n_h_rejet  bigint;
 BEGIN
     SELECT count(*) INTO n_source FROM public.consultation;
     SELECT count(*) INTO n_fait   FROM gold.fait_consultation;
@@ -288,11 +349,22 @@ BEGIN
     FROM gold.rejet_chargement
     WHERE job = 'consultation';
     SELECT count(*) INTO n_patient FROM gold.dim_patient;
+    SELECT count(*) INTO n_h_source FROM public.hospitalisation;
+    SELECT count(*) INTO n_h_fait   FROM gold.fait_hospitalisation;
+    SELECT count(*) INTO n_h_rejet
+    FROM gold.rejet_chargement
+    WHERE job = 'hospitalisation';
 
     IF n_fait + n_rejet <> n_source THEN
         RAISE EXCEPTION
             'Intégrité du chargement rompue : consultations source=%, fait=%, rejets=%',
             n_source, n_fait, n_rejet;
+    END IF;
+
+    IF n_h_fait + n_h_rejet <> n_h_source THEN
+        RAISE EXCEPTION
+            'Intégrité du chargement rompue : hospitalisations source=%, fait=%, rejets=%',
+            n_h_source, n_h_fait, n_h_rejet;
     END IF;
 
     -- Le membre Inconnu ne doit pas être compté comme un patient source.
@@ -302,8 +374,8 @@ BEGIN
             n_patient, (SELECT count(*) FROM public.patient);
     END IF;
 
-    RAISE NOTICE 'Gold chargé : % consultations, % rejets patient, % patients (dont Inconnu).',
-        n_fait, n_rejet, n_patient;
+    RAISE NOTICE 'Gold chargé : % consultations, % rejets patient, % hospitalisations, % rejets séjour, % patients (dont Inconnu).',
+        n_fait, n_rejet, n_h_fait, n_h_rejet, n_patient;
 END $$;
 
 COMMIT;
