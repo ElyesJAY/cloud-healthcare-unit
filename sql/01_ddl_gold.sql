@@ -171,8 +171,10 @@ COMMENT ON COLUMN gold.dim_etablissement.departement IS
 -- -----------------------------------------------------------------------------
 -- Fait Consultation
 -- Grain : une ligne = une consultation.
--- num_consultation est la dimension dégénérée et la clé primaire :
+-- num_consultation est la dimension dégénérée :
 -- on ne l'additionne pas, elle retrouve la consultation source.
+-- annee est reprise de dim_temps et entre dans la clé primaire
+-- pour permettre un partitionnement par année.
 -- nb_consultation vaut toujours 1 (mesure additive).
 -- -----------------------------------------------------------------------------
 CREATE TABLE gold.fait_consultation (
@@ -182,8 +184,10 @@ CREATE TABLE gold.fait_consultation (
     id_diagnostic      integer     NOT NULL,
     id_professionnel   integer     NOT NULL,
     id_etablissement   integer     NOT NULL,
+    annee              integer     NOT NULL,
     nb_consultation    integer     NOT NULL,
-    CONSTRAINT pk_fait_consultation PRIMARY KEY (num_consultation),
+    CONSTRAINT pk_fait_consultation PRIMARY KEY (num_consultation, annee),
+    CONSTRAINT ck_fait_consultation_annee CHECK (annee = 0 OR annee BETWEEN 1900 AND 2300),
     CONSTRAINT ck_fait_consultation_mesure CHECK (nb_consultation = 1),
     CONSTRAINT fk_fait_consultation_patient
         FOREIGN KEY (id_patient) REFERENCES gold.dim_patient (id_patient),
@@ -204,25 +208,28 @@ COMMENT ON COLUMN gold.fait_consultation.nb_consultation IS
   'Mesure additive, constante égale à 1. Le volume s''obtient par SUM.';
 COMMENT ON COLUMN gold.fait_consultation.num_consultation IS
   'Numéro source. Dimension dégénérée : ne pas l''agréger.';
+COMMENT ON COLUMN gold.fait_consultation.annee IS
+  'Année de la consultation, reprise de dim_temps. 0 si la date est inconnue. Sert au partitionnement annuel.';
 
 -- -----------------------------------------------------------------------------
 -- Fait Hospitalisation
--- Présent pour respecter le modèle du livrable 1.
--- Le dump fourni ne contient pas hospitalisations.csv : la table reste vide
--- tant que cette source n'est pas livrée. Le chargement rejettera un patient
--- inconnu et rattachera un diagnostic inconnu au membre -1 (règle du livrable).
--- Num_Hospitalisation n'est pas une colonne du modèle : il servira seulement
--- au dédoublonnage le jour où le fichier sera intégré. La clé technique
--- id_hospitalisation identifie la ligne.
+-- Une ligne = un séjour. Le séjour est relié à l'établissement.
+-- La durée source s'appelle duree_sejour ; en gold elle s'appelle duree_jour.
+-- num_hospitalisation sert seulement au dédoublonnage : il n'est pas chargé.
+-- Un patient ou une date introuvable rejette la ligne. Un diagnostic ou un
+-- établissement introuvable est rattaché au membre Inconnu (clé -1).
 -- -----------------------------------------------------------------------------
 CREATE TABLE gold.fait_hospitalisation (
     id_hospitalisation  bigint GENERATED ALWAYS AS IDENTITY,
     id_patient          integer NOT NULL,
     id_temps            integer NOT NULL,
     id_diagnostic       integer NOT NULL,
+    id_etablissement    integer NOT NULL,
+    annee               integer NOT NULL,
     nb_hospitalisation  integer NOT NULL,
     duree_jour          integer NOT NULL,
-    CONSTRAINT pk_fait_hospitalisation PRIMARY KEY (id_hospitalisation),
+    CONSTRAINT pk_fait_hospitalisation PRIMARY KEY (id_hospitalisation, annee),
+    CONSTRAINT ck_fait_hospitalisation_annee CHECK (annee = 0 OR annee BETWEEN 1900 AND 2300),
     CONSTRAINT ck_fait_hospitalisation_mesure CHECK (nb_hospitalisation = 1),
     CONSTRAINT ck_fait_hospitalisation_duree CHECK (duree_jour >= 0),
     CONSTRAINT fk_fait_hospitalisation_patient
@@ -230,14 +237,20 @@ CREATE TABLE gold.fait_hospitalisation (
     CONSTRAINT fk_fait_hospitalisation_temps
         FOREIGN KEY (id_temps) REFERENCES gold.dim_temps (id_temps),
     CONSTRAINT fk_fait_hospitalisation_diagnostic
-        FOREIGN KEY (id_diagnostic) REFERENCES gold.dim_diagnostic (id_diagnostic)
+        FOREIGN KEY (id_diagnostic) REFERENCES gold.dim_diagnostic (id_diagnostic),
+    CONSTRAINT fk_fait_hospitalisation_etablissement
+        FOREIGN KEY (id_etablissement) REFERENCES gold.dim_etablissement (id_etablissement)
 );
 
 COMMENT ON TABLE gold.fait_hospitalisation IS
-  'Une ligne = une hospitalisation. Non alimentée : source absente du dump. '
+  'Une ligne = une hospitalisation, reliée à un établissement. '
   'Mesures : nb_hospitalisation = 1, duree_jour (additive).';
 COMMENT ON COLUMN gold.fait_hospitalisation.duree_jour IS
-  'Durée du séjour en jours. Nom sans accent, conformément au livrable 1.';
+  'Durée du séjour en jours, reprise de public.hospitalisation.duree_sejour.';
+COMMENT ON COLUMN gold.fait_hospitalisation.id_etablissement IS
+  'Établissement du séjour. Clé étrangère vers dim_etablissement.';
+COMMENT ON COLUMN gold.fait_hospitalisation.annee IS
+  'Année du séjour, reprise de dim_temps. Sert au partitionnement annuel.';
 
 -- -----------------------------------------------------------------------------
 -- Rejets de chargement
