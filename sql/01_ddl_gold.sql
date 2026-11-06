@@ -171,8 +171,10 @@ COMMENT ON COLUMN gold.dim_etablissement.departement IS
 -- -----------------------------------------------------------------------------
 -- Fait Consultation
 -- Grain : une ligne = une consultation.
--- num_consultation est la dimension dégénérée et la clé primaire :
+-- num_consultation est la dimension dégénérée :
 -- on ne l'additionne pas, elle retrouve la consultation source.
+-- annee est reprise de dim_temps et entre dans la clé primaire
+-- pour permettre un partitionnement par année.
 -- nb_consultation vaut toujours 1 (mesure additive).
 -- -----------------------------------------------------------------------------
 CREATE TABLE gold.fait_consultation (
@@ -182,8 +184,10 @@ CREATE TABLE gold.fait_consultation (
     id_diagnostic      integer     NOT NULL,
     id_professionnel   integer     NOT NULL,
     id_etablissement   integer     NOT NULL,
+    annee              integer     NOT NULL,
     nb_consultation    integer     NOT NULL,
-    CONSTRAINT pk_fait_consultation PRIMARY KEY (num_consultation),
+    CONSTRAINT pk_fait_consultation PRIMARY KEY (num_consultation, annee),
+    CONSTRAINT ck_fait_consultation_annee CHECK (annee = 0 OR annee BETWEEN 1900 AND 2300),
     CONSTRAINT ck_fait_consultation_mesure CHECK (nb_consultation = 1),
     CONSTRAINT fk_fait_consultation_patient
         FOREIGN KEY (id_patient) REFERENCES gold.dim_patient (id_patient),
@@ -204,6 +208,8 @@ COMMENT ON COLUMN gold.fait_consultation.nb_consultation IS
   'Mesure additive, constante égale à 1. Le volume s''obtient par SUM.';
 COMMENT ON COLUMN gold.fait_consultation.num_consultation IS
   'Numéro source. Dimension dégénérée : ne pas l''agréger.';
+COMMENT ON COLUMN gold.fait_consultation.annee IS
+  'Année de la consultation, reprise de dim_temps. 0 si la date est inconnue. Sert au partitionnement annuel.';
 
 -- -----------------------------------------------------------------------------
 -- Fait Hospitalisation
@@ -219,9 +225,11 @@ CREATE TABLE gold.fait_hospitalisation (
     id_temps            integer NOT NULL,
     id_diagnostic       integer NOT NULL,
     id_etablissement    integer NOT NULL,
+    annee               integer NOT NULL,
     nb_hospitalisation  integer NOT NULL,
     duree_jour          integer NOT NULL,
-    CONSTRAINT pk_fait_hospitalisation PRIMARY KEY (id_hospitalisation),
+    CONSTRAINT pk_fait_hospitalisation PRIMARY KEY (id_hospitalisation, annee),
+    CONSTRAINT ck_fait_hospitalisation_annee CHECK (annee = 0 OR annee BETWEEN 1900 AND 2300),
     CONSTRAINT ck_fait_hospitalisation_mesure CHECK (nb_hospitalisation = 1),
     CONSTRAINT ck_fait_hospitalisation_duree CHECK (duree_jour >= 0),
     CONSTRAINT fk_fait_hospitalisation_patient
@@ -241,6 +249,8 @@ COMMENT ON COLUMN gold.fait_hospitalisation.duree_jour IS
   'Durée du séjour en jours, reprise de public.hospitalisation.duree_sejour.';
 COMMENT ON COLUMN gold.fait_hospitalisation.id_etablissement IS
   'Établissement du séjour. Clé étrangère vers dim_etablissement.';
+COMMENT ON COLUMN gold.fait_hospitalisation.annee IS
+  'Année du séjour, reprise de dim_temps. Sert au partitionnement annuel.';
 
 -- -----------------------------------------------------------------------------
 -- Rejets de chargement

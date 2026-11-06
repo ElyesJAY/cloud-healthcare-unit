@@ -247,7 +247,7 @@ WHERE p.id_patient IS NULL;
 -- -----------------------------------------------------------------------------
 INSERT INTO gold.fait_consultation (
     num_consultation, id_patient, id_temps, id_diagnostic,
-    id_professionnel, id_etablissement, nb_consultation
+    id_professionnel, id_etablissement, annee, nb_consultation
 )
 SELECT DISTINCT ON (c.num_consultation)
     c.num_consultation::varchar(50),
@@ -256,6 +256,10 @@ SELECT DISTINCT ON (c.num_consultation)
     COALESCE(d.id_diagnostic, -1),
     COALESCE(pr.id_professionnel, -1),
     COALESCE(et.id_etablissement, -1),
+    CASE
+        WHEN tm.annee ~ '^[0-9]{4}$' THEN tm.annee::integer
+        ELSE 0
+    END,
     1
 FROM public.consultation AS c
 JOIN gold.dim_patient AS p
@@ -304,13 +308,17 @@ WHERE p.id_patient IS NULL
 -- -----------------------------------------------------------------------------
 INSERT INTO gold.fait_hospitalisation (
     id_patient, id_temps, id_diagnostic, id_etablissement,
-    nb_hospitalisation, duree_jour
+    annee, nb_hospitalisation, duree_jour
 )
 SELECT DISTINCT ON (h.num_hospitalisation)
     h.id_patient,
     h.id_temps,
     COALESCE(d.id_diagnostic, -1),
     COALESCE(et.id_etablissement, -1),
+    CASE
+        WHEN tm.annee ~ '^[0-9]{4}$' THEN tm.annee::integer
+        ELSE 0
+    END,
     1,
     h.duree_sejour
 FROM public.hospitalisation AS h
